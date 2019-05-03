@@ -1,14 +1,27 @@
+import fcntl
+import netifaces as ni
 import socket
-from getmac import get_mac_address
+import struct
+import subprocess as sb
 from multiping import MultiPing
 
-# Alexey Lyapeshkin 2018 (c)
-usage = 'Usage: python main.py submask'
+
+def getHwAddr(ifname):
+    """
+    Getting MAC-adress
+    :param ifname:
+    :return:
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    info = fcntl.ioctl(s.fileno(), 0x8927,
+                       struct.pack('256s', bytes(ifname, 'utf-8')[:15]))
+    return ':'.join('%02x' % b for b in info[18:24])
 
 
 def padding(something):
     """
-    Required to complement the binary representation of a byte up to 8 characters.
+    Required to complement the binary representation of a
+    byte up to 8 characters.
     :param something:
     :return: a string that contains the required number of characters.
     """
@@ -58,55 +71,83 @@ def get_str(integer):
     return '.'.join(list_)
 
 
-def _main(args):
+def parse_string(string):
+    index_1 = string.find('(')
+    index_2 = string.rfind(')')
+    name = string[:index_1 - 1]
+    ip = string[index_1 + 1:index_2]
+    mac = string[index_2 + 4:index_2 + 4 + 17]
+    index_3 = string.rfind(']')
+    interface = string[index_3 + 5:]
+    return name, ip, mac, interface
+
+
+def main(list_of_args):
     """
-    Output devices on the local network with their MAC, IP and Name.
-    :param args:
-    :return: сonsole output.
+      Output devices on the local network with their MAC, IP and Name.
+      :param list_of_args:
+      :param args:
+      :return: сonsole output.
     """
-    # PREPARATION
-    my_ip = socket.gethostbyname(socket.getfqdn())  # MY IP
-    my_mac = get_mac_address(ip=my_ip)
 
-    # MAIN
-    print('{0:^19}|{1:^20}'.format('My IP: ','My MAC-adress: '))
-    print('-'*40)
-    print('{0:^18} - {1:^20}'.format(my_ip, my_mac))
-    print('-'*40)
-    if not args:
-        print(usage)
-    else:
-        submask = args[0]
-        my_ip = get_int(my_ip)
-        submask = get_int(submask)
-        broadcast = my_ip | (4294967295 ^ submask)
+    main_dict = {'interface': [], 'ip': [], 'mac': []}
 
-        print('Broadcast adress: {0}'.format(get_str(broadcast)))
-        adr = my_ip & submask
+    interfaces = ni.interfaces()  # List of interfaces
+    # Generate Header
+    print('{0:-^63}'.format('-'))
+    print('{0: ^20}|{1: ^20}|{2: ^20}|'.format('Interface', 'IP', 'MAC'))
+    print('{0:-^63}'.format('-'))
 
-        ips = [get_str(x) for x in range(adr, broadcast)]
+    for interface in interfaces[:-1]:
+        # getting MAC of interface
+        mac = getHwAddr(interface)
 
-        mp = MultiPing(ips)
-        mp.send()
-        responses, no_responses = mp.receive(0.5)
-        main_list_motherfucker = list(responses.keys())  # local ips
+        # getting ip of interface
+        ip = ni.ifaddresses(interface)[ni.AF_INET][0]['addr']
 
-        # OUTPUT
+        print('{0: ^20}|{1: ^20}|{2: ^20}'.format(interface, ip, mac))
 
-        print('_' * 56)
-        print('{0:^18}|{1:^20}|{2:^15}'.format('IP', 'MAC', 'NAME'))
-        print('¯' * 56)
-        for ip in main_list_motherfucker:
-            mac = get_mac_address(ip=ip)
-            host = socket.gethostbyaddr(ip)[0]
-            if host == ip:
-                print('{0:^18}|{1:^20}|{2:40}'.format(ip, mac, 'Can\'t get name'))
-            else:
-                print('{0:^18}|{1:^20}|{2:40}'.format(ip, mac, host))
+        main_dict['interface'].append(interface)
+        main_dict['ip'].append(ip)
+        main_dict['mac'].append(mac)
+
+    print('{0:-^84}'.format('-'))
+
+    submask = get_int(list_of_args[0])
+    ip = list_of_args[1]
+    log_file = open('log.txt', 'w')
+    sb.run(["nmap", "{0}/{1}".format(ip, (bin(submask)[2:]).count('1'))],
+           shell=False, stdout=log_file)
+
+    list_of_devices = sb.Popen('arp -a', shell=True, stdout=sb.PIPE).stdout.read().decode('utf-8').split('\n')
+    list_of_devices = [item for item in list_of_devices if item.find('не завершено') == -1 and item != '']
+
+    print('{0: ^20}|{1: ^20}|{2: ^20}|{3: ^20}|'.format('Name', 'IP', 'MAC', 'Interface'))
+    print('{0:-^84}'.format('-'))
+
+    for string in list_of_devices:
+        print('{0: ^20}|{1: ^20}|{2: ^20}|{3: ^20}|'.format(*parse_string(string)))
+
+    print('{0:-^84}'.format('-'))
 
 
 if __name__ == '__main__':
-    import sys
+    import sys, re
+
+    usage = '\npython3 main.py SUBMASK IP-ADDRESS\n'
 
     list_of_args = sys.argv[1:]
-    _main(list_of_args)
+
+    if len(list_of_args) != 0:
+        if re.match(
+                r'(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)',
+                list_of_args[1]):
+
+            if 0 <= get_int(list_of_args[0]) <= 4294967295:
+                main(list_of_args)
+            else:
+                print(usage)
+        else:
+            print(usage)
+    else:
+        print(usage)
